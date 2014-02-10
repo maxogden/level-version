@@ -7,15 +7,9 @@ var wrap = require("level-onion")
 var fix = require("level-fix-range")
 var concat = require("concat-stream")
 var gc = require("./gc")
+var util = require("./util")
 
 var through = require("through2")
-
-var u = require("./util")
-var makeKey = u.makeKey
-var unmakeKey = u.unmakeKey
-var wrapCb = u.wrapCb
-var encode = u.encode
-var decode = u.decode
 
 /**
  * @param  {Object} options  Wrapping options
@@ -40,6 +34,14 @@ function Version(options) {
 
   this.delimiter = (options.delimiter != null) ? options.delimiter : "\xff"
   this.defaultVersion = options.defaultVersion
+  
+  this.MAX_VERSION = Math.pow(2, 53)
+  this.MIN_VERSION = -Math.pow(2, 53)
+
+  var u = util(options)
+  this.makeKey = u.makeKey
+  this.unmakeKey = u.unmakeKey
+  this.wrapCb = u.wrapCb
 }
 
 Version.prototype.install = function (db, parent) {
@@ -60,7 +62,7 @@ Version.prototype.install = function (db, parent) {
 
     var version = (options.version != null) ? options.version : self.defaultVersion()
 
-    return parent.put(makeKey(sep, key, version), value, options, wrapCb(version, cb))
+    return parent.put(self.makeKey(sep, key, version, value), value, options, self.wrapCb(version, cb))
   }
 
 
@@ -76,7 +78,7 @@ Version.prototype.install = function (db, parent) {
       return db.getLast(key, options, cb)
     }
 
-    return parent.get(makeKey(sep, key, options.version), options, wrapCb(options.version, cb))
+    return parent.get(self.makeKey(sep, key, options.version), options, self.wrapCb(options.version, cb))
   }
 
   function getEnd(reverse, key, options, cb) {
@@ -113,7 +115,7 @@ Version.prototype.install = function (db, parent) {
       options = {}
     }
     var version = (options.version != null) ? options.version : self.defaultVersion()
-    return parent.del(makeKey(sep, key, version), options, wrapCb(version, cb))
+    return parent.del(self.makeKey(sep, key, version), options, self.wrapCb(version, cb))
   }
 
   /* -- batch -- */
@@ -147,7 +149,7 @@ Version.prototype.install = function (db, parent) {
     if (!arguments.length) return new Batch()
     var transformed = arr.map(function (e) {
       var version = (e.version != null) ? e.version : self.defaultVersion()
-      e.key = makeKey(sep, e.key, version)
+      e.key = self.makeKey(sep, e.key, version, e.value)
       return e
     })
     parent.batch(transformed, options, cb)
@@ -168,8 +170,8 @@ Version.prototype.install = function (db, parent) {
     if (options._start) options.start = options._start
     if (options._end) options.end = options._end
 
-    if (options.maxVersion == null) options.maxVersion = u.MAX_VERSION
-    if (options.minVersion == null) options.minVersion = u.MIN_VERSION
+    if (options.maxVersion == null) options.maxVersion = self.MAX_VERSION
+    if (options.minVersion == null) options.minVersion = self.MIN_VERSION
 
     var removeKeys = (options.keys === false) ? true : false
     options.keys = true
@@ -182,8 +184,11 @@ Version.prototype.install = function (db, parent) {
       }
 
       // split off version key & add it to record
-      var kv = unmakeKey(sep, record.key)
+      var kv = self.unmakeKey(sep, record.key)
 
+      // version can be an array if 1st element is the version
+      var version = kv.version[0] || kv.version
+      
       if (options.versionLimit) {
         if (kv.key != this.currentKey) {
           this.currentKey = kv.key
@@ -192,7 +197,7 @@ Version.prototype.install = function (db, parent) {
         if (this.currentCount++ >= options.versionLimit) return cb()
       }
 
-      if (kv.version >= options.minVersion && kv.version <= options.maxVersion) {
+      if (version >= options.minVersion && version <= options.maxVersion) {
         record.version = kv.version
         record.key = kv.key
         this.push(record)
@@ -250,11 +255,11 @@ Version.prototype.install = function (db, parent) {
     options.start = options.min = options.end = options.max = undefined
 
     options._start = (options.minVersion != null)
-                  ? makeKey(sep, key, options.minVersion)
+                  ? self.makeKey(sep, key, options.minVersion)
                   : key + sep + sep
 
     options._end = (options.maxVersion != null)
-                ? makeKey(sep, key, options.maxVersion)
+                ? self.makeKey(sep, key, options.maxVersion)
                 : key + sep
 
     return db.createReadStream(options)
@@ -270,7 +275,7 @@ Version.prototype.install = function (db, parent) {
       var version = (record.version != null) ? record.version : self.defaultVersion()
 
       // Important to make a copy here in case we're saving this in multiple places.
-      var insert = {type: record.type, key: makeKey(sep, record.key, version), value: record.value}
+      var insert = {type: record.type, key: self.makeKey(sep, record.key, version, record.value), value: record.value}
       this.push(insert)
       cb()
     })
